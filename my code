@@ -1,0 +1,436 @@
+%load_ext autoreload
+%autoreload 2
+import os
+import sys
+import json
+import datetime
+import numpy as np
+import skimage.io
+from imgaug import augmenters as iaa
+
+import random
+import math
+import re
+import time
+import tensorflow as tf
+import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+
+# Root directory of the project
+ROOT_DIR = os.path.abspath("./Mask_RCNN/")
+
+# Directory to save logs and trained model
+MODEL_DIR = os.path.join(ROOT_DIR, "logs")
+
+# Import Mask RCNN
+sys.path.append(ROOT_DIR)  # To find local version of the library
+
+# Directory to save logs and trained model
+LOGS_DIR = os.path.join(ROOT_DIR, "logs")
+
+from mrcnn.config import Config
+from mrcnn import utils
+from mrcnn import model as modellib
+from mrcnn import visualize
+from mrcnn.visualize import display_images
+from mrcnn.model import log
+
+# import nucleus
+
+# Path to trained weights file
+COCO_MODEL_PATH = os.path.join(ROOT_DIR, "mask_rcnn_coco.h5")
+# Download COCO trained weights from Releases if needed
+if not os.path.exists(COCO_MODEL_PATH):
+    utils.download_trained_weights(COCO_MODEL_PATH)
+
+# Directory to save logs and model checkpoints, if not provided
+# through the command line argument --logs
+DEFAULT_LOGS_DIR = os.path.join(ROOT_DIR, "logs")
+
+# Results directory
+# Save submission files here
+RESULTS_DIR = os.path.join(ROOT_DIR, "results/nucleus/")
+
+# The dataset doesn't have a standard train/val split, so I picked
+# a variety of images to surve as a validation set.
+VAL_IMAGE_IDS = ['3441821ebea04face181c9e2f4d0d09727c764827ac51b9e7fbadbebabeab225',
+'68f833de9f8c631cedd7031b8ed9b908c42cbbc1e14254722728a8b7d596fd4c',
+'358e47eaa1e9222252793fe0fb8c77028d4e0d4360b95a07c9fe6df6a2066556',
+'9620c33d8ef2772dbc5bd152429f507bd7fafb27e12109003292b671e556b089',
+'ec031f176dafe0b36547068ce42eab39428ec7995dac1b3ea52d1db79b61fdeb',
+'fadeb0ab092833f27daaeb3e24223eb090f9536b83f68cde8f49df7c544f711b',
+'79dfcbc9361edd3a1ffe81a5bdaa22a197ad1341f3fa64b86a646c2607d6b324',
+'6c67b78e8164801059375ed9a607f61e67a7ae347e92e36a7f20514224541d56',
+'1f9e429c12f4477221b5b855a5f494fda2ef6d064ff75b061ffaf093e91758c5',
+'17b9bf4356db24967c4677b8376ac38f826de73a88b93a8d73a8b452e399cdff',
+'a4c44fc5f5bf213e2be6091ccaed49d8bf039d78f6fbd9c4d7b7428cfcb2eda4',
+'5cc036b65f7f2d5480e2be111a561f3713ac021683a9a9138dc49492a29ce856',
+'4ae4f936a9ade472764dad80f60f7168e4be067aa66ce9d06d60ebe34951dca4',
+'a6593632dcbbe4c9e9429a9cec573d26fd8c91a47d554d315f25e7c2e0280ee3',
+'f29fd9c52e04403cd2c7d43b6fe2479292e53b2f61969d25256d2d2aca7c6a81',
+'ade080c6618cbbb0a25680cf847f312b5e19b22bfe1cafec0436987ebe5b1e7e',
+'a984e7fb886aa02e29d112766d3ce26a4f78eac540ce7bbdbd42af2761928f6d',
+'a0afead3b4fe393f6a6159de040ecb2e66f8a89090abf0d0bf5b8e1d38ae667c',
+'98a463483fe3a56deacc8bc00ab8aa62668bd40ad0c70bbe7deb10d3e4aeb0c0',
+'0e5edb072788c7b1da8829b02a49ba25668b09f7201cf2b70b111fc3b853d14f',
+'4ff152d76db095f75c664dd48e41e8c9953fd0e784535883916383165e28a08e',
+'3bfd6bb152310f93daa6f4e1867c10572946e874b3a30c9ba8e0fcdeb590300b',
+'abd8dde78f8d37b68b28da67459371ed65f0a575523e94bc4ecbc88e6fedf0d0',
+'2a1a294e21d76efd0399e4eb321b45f44f7510911acd92c988480195c5b4c812',
+'5ef4442e5b8b0b4cf824b61be4050dfd793d846e0a6800afa4425a2f66e91456',
+'cb4df20a83b2f38b394c67f1d9d4aef29f9794d5345da3576318374ec3a11490',
+'c1afe66cd139f996fd984f5f2622903730ec2f1192d90608154f07f7ef6cdb4b',
+'9e4f8ec60a0d622a02c0e16eedcc0101f88ddefbcec2383946c4572b57a1e43a',
+'1d9eacb3161f1e2b45550389ecf7c535c7199c6b44b1c6a46303f7b965e508f1']
+len(VAL_IMAGE_IDS)
+
+# Configurations
+
+class NucleusConfig(Config):
+    """Configuration for training on the nucleus segmentation dataset."""
+    # Give the configuration a recognizable name
+    NAME = "nucleus"
+
+    # Adjust depending on your GPU memory
+    IMAGES_PER_GPU = 2
+
+    # Number of classes (including background)
+    NUM_CLASSES = 1 + 1  # Background + nucleus
+
+    # Number of training and validation steps per epoch
+    STEPS_PER_EPOCH = (729 - len(VAL_IMAGE_IDS)) // IMAGES_PER_GPU
+    VALIDATION_STEPS = max(1, len(VAL_IMAGE_IDS) // IMAGES_PER_GPU)
+
+    # Don't exclude based on confidence. Since we have two classes
+    # then 0.5 is the minimum anyway as it picks between nucleus and BG
+    DETECTION_MIN_CONFIDENCE = 0
+
+    # Backbone network architecture
+    # Supported values are: resnet50, resnet101
+    BACKBONE = "resnet50"
+
+    # Input image resizing
+    # Random crops of size 512x512
+    IMAGE_RESIZE_MODE = "crop"
+    IMAGE_MIN_DIM = 512
+    IMAGE_MAX_DIM = 512
+    IMAGE_MIN_SCALE = 2.0
+
+    # Length of square anchor side in pixels
+    # accordinng to height / width
+    # RPN_ANCHOR_SCALES = (8, 16, 32, 64, 128)
+    RPN_ANCHOR_SCALES = (8, 16, 32, 64, 256)
+
+    # ROIs kept after non-maximum supression (training and inference)
+    POST_NMS_ROIS_TRAINING = 1000
+    POST_NMS_ROIS_INFERENCE = 2000
+
+    # Non-max suppression threshold to filter RPN proposals.
+    # You can increase this during training to generate more propsals.
+    RPN_NMS_THRESHOLD = 0.9
+
+    # How many anchors per image to use for RPN training
+    # RPN_TRAIN_ANCHORS_PER_IMAGE = 64
+    # accordinng to number
+    # resize problem
+    RPN_TRAIN_ANCHORS_PER_IMAGE = 150
+
+    # Image mean (RGB) ???
+    MEAN_PIXEL = np.array([43.53, 39.56, 48.22])
+
+    # If enabled, resizes instance masks to a smaller size to reduce
+    # memory load. Recommended when using high-resolution images.
+    USE_MINI_MASK = True
+    MINI_MASK_SHAPE = (56, 56)  # (height, width) of the mini-mask
+
+    # Number of ROIs per image to feed to classifier/mask heads
+    # The Mask RCNN paper uses 512 but often the RPN doesn't generate
+    # enough positive proposals to fill this and keep a positive:negative
+    # ratio of 1:3. You can increase the number of proposals by adjusting
+    # the RPN NMS threshold.
+    TRAIN_ROIS_PER_IMAGE = 128
+
+    # Maximum number of ground truth instances to use in one image
+    MAX_GT_INSTANCES = 200
+
+    # Max number of final detections per image
+    # accordinng to number
+    DETECTION_MAX_INSTANCES = 400
+
+config = NucleusConfig()
+config.display()
+
+class NucleusInferenceConfig(NucleusConfig):
+    # Set batch size to 1 to run one image at a time
+    GPU_COUNT = 1
+    IMAGES_PER_GPU = 1
+    # Don't resize imager for inferencing
+    IMAGE_RESIZE_MODE = "pad64"
+    # Non-max suppression threshold to filter RPN proposals.
+    # You can increase this during training to generate more propsals.
+    RPN_NMS_THRESHOLD = 0.7
+    # 0.6?
+
+class NucleusDataset(utils.Dataset):
+
+    def load_nucleus(self, dataset_dir, subset):
+        """Load a subset of the nuclei dataset.
+
+        dataset_dir: Root directory of the dataset
+        subset: Subset to load. Either the name of the sub-directory,
+                such as stage1_train, stage1_test, ...etc. or, one of:
+                * train: stage1_train excluding validation images
+                * val: validation images from VAL_IMAGE_IDS
+        """
+        # Add classes. We have one class.
+        # Naming the dataset nucleus, and the class nucleus
+        self.add_class("nucleus", 1, "nucleus")
+
+        # Which subset?
+        # "val": use hard-coded list above
+        # "train": use data from stage1_train minus the hard-coded list above
+        # else: use the data from the specified sub-directory
+        assert subset in ["train", "val", "stage1_train", "stage1_test", "stage2_test"]
+        subset_dir = "stage1_train" if subset in ["train", "val"] else subset
+        dataset_dir = os.path.join(dataset_dir, subset_dir)
+        if subset == "val":
+            image_ids = VAL_IMAGE_IDS
+        else:
+            # Get image ids from directory names
+            image_ids = next(os.walk(dataset_dir))[1]
+            if subset == "train":
+                image_ids = list(set(image_ids) - set(VAL_IMAGE_IDS))
+
+        # Add images
+        for image_id in image_ids:
+            self.add_image(
+                "nucleus",
+                image_id=image_id,
+                path=os.path.join(dataset_dir, image_id, "images/{}.png".format(image_id)))
+
+    def load_mask(self, image_id):
+        """Generate instance masks for an image.
+       Returns:
+        masks: A bool array of shape [height, width, instance count] with
+            one mask per instance.
+        class_ids: a 1D array of class IDs of the instance masks.
+        """
+        info = self.image_info[image_id]
+        # Get mask directory from image path
+        mask_dir = os.path.join(info["path"].split("/images/")[0], "masks")
+        # Read mask files from .png image
+        mask = []
+        for f in next(os.walk(mask_dir))[2]:
+            if f.endswith(".png"):
+                m = skimage.io.imread(os.path.join(mask_dir, f)).astype(np.bool)
+                mask.append(m)
+        mask = np.stack(mask, axis=-1)
+        # Return mask, and array of class IDs of each instance. Since we have
+        # one class ID, we return an array of ones
+        return mask, np.ones([mask.shape[-1]], dtype=np.int32)
+
+    def image_reference(self, image_id):
+        """Return the path of the image."""
+        info = self.image_info[image_id]
+        if info["source"] == "nucleus":
+            return info["id"]
+        else:
+            super(self.__class__, self).image_reference(image_id)
+
+dataset_dir = './'
+# Training dataset.
+dataset_train = NucleusDataset()
+dataset_train.load_nucleus(dataset_dir, "train")
+dataset_train.prepare()
+
+# Validation dataset
+dataset_val = NucleusDataset()
+dataset_val.load_nucleus(dataset_dir, "val")
+dataset_val.prepare()
+
+model = modellib.MaskRCNN(mode="training", config=config,
+                          model_dir=MODEL_DIR)
+
+# Which weights to start with?
+init_with = "coco"  # imagenet, coco, or last
+
+if init_with == "imagenet":
+    model.load_weights(model.get_imagenet_weights(), by_name=True)
+elif init_with == "coco":
+    # Load weights trained on MS COCO, but skip layers that
+    # are different due to the different number of classes
+    # See README for instructions to download the COCO weights
+    model.load_weights(COCO_MODEL_PATH, by_name=True,
+                       exclude=["mrcnn_class_logits", "mrcnn_bbox_fc", 
+                                "mrcnn_bbox", "mrcnn_mask"])
+elif init_with == "last":
+    # Load the last model you trained and continue training
+    model.load_weights(model.find_last()[1], by_name=True)
+
+augmentation = iaa.SomeOf((0, 2), [
+        iaa.Fliplr(0.5),
+        iaa.Flipud(0.5),
+        iaa.OneOf([iaa.Affine(rotate=90),
+                   iaa.Affine(rotate=180),
+                   iaa.Affine(rotate=270)]),
+        iaa.Multiply((0.8, 1.5)), # bright
+        iaa.GaussianBlur(sigma=(0.0, 5.0)),
+        iaa.AdditiveGaussianNoise(scale=(0, 0.05*255))
+    ])
+
+# Fine tune all layers
+# Passing layers="all" trains all layers. You can also 
+# pass a regular expression to select which layers to
+# train by name pattern.
+model.train(dataset_train, dataset_val, 
+            learning_rate=config.LEARNING_RATE,
+            epochs=40, 
+            layers="all",
+            augmentation = augmentation)
+            
+# Fine tune all layers
+# Passing layers="all" trains all layers. You can also 
+# pass a regular expression to select which layers to
+# train by name pattern.
+model.train(dataset_train, dataset_val, 
+            learning_rate=config.LEARNING_RATE/10,
+            epochs=50, 
+            layers="all",
+            augmentation = augmentation)
+            
+# Fine tune all layers
+# Passing layers="all" trains all layers. You can also 
+# pass a regular expression to select which layers to
+# train by name pattern.
+model.train(dataset_train, dataset_val, 
+            learning_rate=config.LEARNING_RATE/1000,
+            epochs=70, 
+            layers="all",
+            augmentation = augmentation)
+            
+model.train(dataset_train, dataset_val, 
+            learning_rate=config.LEARNING_RATE/100,
+            epochs=60, 
+            layers="all",
+            augmentation = augmentation)
+            
+inference_config = NucleusInferenceConfig()
+
+# Recreate the model in inference mode
+model = modellib.MaskRCNN(mode="inference", 
+                          config=inference_config,
+                          model_dir=MODEL_DIR)
+                          
+# Get path to saved weights
+# Either set a specific path or find last trained weights
+# model_path = os.path.join(ROOT_DIR, ".h5 file name here")
+model_path = model.find_last()[1]
+
+# Load trained weights (fill in path to trained weights here)
+assert model_path != "", "Provide path to trained weights"
+print("Loading weights from ", model_path)
+model.load_weights(model_path, by_name=True)
+
+def rle_encode(mask):
+    """Encodes a mask in Run Length Encoding (RLE).
+    Returns a string of space-separated values.
+    """
+    assert mask.ndim == 2, "Mask must be of shape [Height, Width]"
+    # Flatten it column wise
+    m = mask.T.flatten()
+    # Compute gradient. Equals 1 or -1 at transition points
+    g = np.diff(np.concatenate([[0], m, [0]]), n=1)
+    # 1-based indicies of transition points (where gradient != 0)
+    rle = np.where(g != 0)[0].reshape([-1, 2]) + 1
+    # Convert second index in each pair to lenth
+    rle[:, 1] = rle[:, 1] - rle[:, 0]
+    return " ".join(map(str, rle.flatten()))
+
+
+def rle_decode(rle, shape):
+    """Decodes an RLE encoded list of space separated
+    numbers and returns a binary mask."""
+    rle = list(map(int, rle.split()))
+    rle = np.array(rle, dtype=np.int32).reshape([-1, 2])
+    rle[:, 1] += rle[:, 0]
+    rle -= 1
+    mask = np.zeros([shape[0] * shape[1]], np.bool)
+    for s, e in rle:
+        assert 0 <= s < mask.shape[0]
+        assert 1 <= e <= mask.shape[0], "shape: {}  s {}  e {}".format(shape, s, e)
+        mask[s:e] = 1
+    # Reshape and transpose
+    mask = mask.reshape([shape[1], shape[0]]).T
+    return mask
+
+
+
+def mask_to_rle(image_id, mask, scores):
+    "Encodes instance masks to submission format."
+    assert mask.ndim == 3, "Mask must be [H, W, count]"
+    # If mask is empty, return line with image ID only
+    if mask.shape[-1] == 0:
+        return "{},".format(image_id)
+    # Remove mask overlaps
+    # Multiply each instance mask by its score order
+    # then take the maximum across the last dimension
+    order = np.argsort(scores)[::-1] + 1  # 1-based descending
+    mask = np.max(mask * np.reshape(order, [1, 1, -1]), -1)
+    # Loop over instance masks
+    lines = []
+    for o in order:
+        m = np.where(mask == o, 1, 0)
+        # Skip if empty
+        if m.sum() == 0.0:
+            continue
+        rle = rle_encode(m)
+        lines.append("{}, {}".format(image_id, rle))
+    return "\n".join(lines)
+    
+def detect(model, dataset_dir, subset):
+    """Run detection on images in the given directory."""
+    print("Running on {}".format(dataset_dir))
+
+    # Create directory
+    if not os.path.exists(RESULTS_DIR):
+        os.makedirs(RESULTS_DIR)
+    submit_dir = "submit_{:%Y%m%dT%H%M%S}".format(datetime.datetime.now())
+    submit_dir = os.path.join(RESULTS_DIR, submit_dir)
+    os.makedirs(submit_dir)
+
+    # Read dataset
+    dataset = NucleusDataset()
+    dataset.load_nucleus(dataset_dir, subset)
+    dataset.prepare()
+    # Load over images
+    submission = []
+    i = 0
+    for image_id in dataset.image_ids:
+        # Load image and run detection
+        image = dataset.load_image(image_id)
+        # Detect objects
+        r = model.detect([image], verbose=0)[0]
+        # Encode image to RLE. Returns a string of multiple lines
+        source_id = dataset.image_info[image_id]["id"]
+        rle = mask_to_rle(source_id, r["masks"], r["scores"])
+        submission.append(rle)
+        # Save image with masks
+        # visualize.display_instances(
+        #     image, r['rois'], r['masks'], r['class_ids'],
+        #     dataset.class_names, r['scores'],
+        #     show_bbox=False, show_mask=False,
+        #     title="Predictions")
+        # plt.savefig("{}/{}.png".format(submit_dir, dataset.image_info[image_id]["id"]))
+        print(i)
+        i = i + 1
+
+    # Save to csv file
+    submission = "ImageId,EncodedPixels\n" + "\n".join(submission)
+    file_path = os.path.join(submit_dir, "mysubmit.csv")
+    with open(file_path, "w") as f:
+        f.write(submission)
+    print("Saved to ", submit_dir)
+
+detect(model, dataset_dir, "stage2_test")
+detect(model, dataset_dir, "stage2_test")
